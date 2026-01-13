@@ -34,6 +34,8 @@ local lastUpdate = 0
 local isQueryingTasks = false
 local lastTaskQuery = 0
 local needsProgressUpdate = false
+local needsRefresh = false  -- Flag for deferred refresh (to avoid mq.delay in ImGui callback)
+local TaskNPC = nil  -- Store the NPC targeted when accepting a task
 
 -- Checkbox states for each member
 local checkboxStates = {}  -- [memberName] = { i = bool, ivu = bool }
@@ -88,15 +90,6 @@ local useItemState = {
     targetID = nil,
     lastCommandTime = 0,
     commandDelay = 500
-}
-
--- Click area state machine
-local clickAreaState = {
-    active = false,
-    phase = "idle",  -- idle, navigating, looking, clicking
-    lastCommandTime = 0,
-    commandDelay = 500,
-    membersToClick = {}
 }
 
 local queryCounter = 0
@@ -815,65 +808,6 @@ local function PickupGroundSpawn()
     pickupState.active = true
 end
 
--- Click area - have all group members navigate to driver, look down, and click center screen
-local function ClickArea()
-    if not selectedTaskID then
-        print("[GQT] No task selected!")
-        return
-    end
-
-    -- Check if we have any task progress data and track which step each member is on
-    local memberStepNumbers = {}
-    local highestStep = 0
-
-    for _, memberName in ipairs(groupMembers) do
-        local progress = taskProgress[memberName]
-        if progress and progress.currentObjective then
-            -- Track which step number (objective number) this member is on
-            local stepNumber = progress.currentObjective
-            memberStepNumbers[memberName] = stepNumber
-            if stepNumber > highestStep then
-                highestStep = stepNumber
-            end
-        elseif progress and progress.currentStep == "All Complete!" then
-            -- Member has completed all objectives - use total objective count + 1
-            local totalObjectives = #(progress.objectives or {})
-            memberStepNumbers[memberName] = totalObjectives + 1
-            if totalObjectives + 1 > highestStep then
-                highestStep = totalObjectives + 1
-            end
-        end
-    end
-
-    -- If we have no member data at all, return early
-    if next(memberStepNumbers) == nil then
-        print("[GQT] No task progress data available - wait for progress to load")
-        return
-    end
-
-    -- Find all members who are behind the highest step
-    local membersToClick = {}
-    for memberName, stepNumber in pairs(memberStepNumbers) do
-        if stepNumber < highestStep then
-            table.insert(membersToClick, memberName)
-        end
-    end
-
-    -- If all members are on the same step, have all members try
-    if #membersToClick == 0 then
-        print(string.format("[GQT] All members on step %d, all clicking area", highestStep))
-        clickAreaState.membersToClick = groupMembers
-    else
-        print(string.format("[GQT] %d member(s) behind (highest step: %d), clicking area", #membersToClick, highestStep))
-        clickAreaState.membersToClick = membersToClick
-    end
-
-    -- Start the click area state machine
-    clickAreaState.active = true
-    clickAreaState.phase = "navigating"
-    clickAreaState.lastCommandTime = 0
-end
-
 -- Perform hails - have all group members hail driver's target based on progress count
 local function PerformHails()
     local myName = mq.TLO.Me.CleanName()
@@ -1058,17 +992,21 @@ local function GroupTaskTrackerGUI()
                 ImGui.Separator()
 
                 if ImGui.Button("Refresh") then
-                    UpdateGroupMembers()
-                    UpdateAvailableTasks()
-                    if selectedTaskID then
-                        needsProgressUpdate = true
-                    end
+                    -- Set flag for deferred refresh (mq.delay cannot be called from ImGui callback)
+                    needsRefresh = true
+                    print("[GQT] Refresh queued...")
                 end
 
                 ImGui.Separator()
                 ImGui.TextColored(0.7, 0.9, 1, 1, "Commands:")
 
                 if ImGui.Button("Accept Task") then
+                    -- Store the current target as the TaskNPC
+                    local targetName = mq.TLO.Target.CleanName()
+                    if targetName and targetName ~= "" then
+                        TaskNPC = targetName
+                        print(string.format("[GQT] TaskNPC set to: %s", TaskNPC))
+                    end
                     mq.cmd('/dga /notify TaskSelectWnd TSEL_AcceptButton leftmouseup')
                 end
                 ImGui.SameLine()
@@ -1095,18 +1033,19 @@ local function GroupTaskTrackerGUI()
                 if ImGui.Button("Pickup Ground Spawn") then
                     PickupGroundSpawn()
                 end
-                ImGui.SameLine()
-                if ImGui.Button("Click Area") then
-                    ClickArea()
-                end
 
                 ImGui.BeginDisabled()
-                ImGui.Button("Assign Quest Loot")
+                ImGui.Button("Assign Task Loot")
                 ImGui.EndDisabled()
                 ImGui.SameLine()
-                ImGui.BeginDisabled()
-                ImGui.Button("Target Quest NPC")
-                ImGui.EndDisabled()
+                if ImGui.Button("Target Task NPC") then
+                    if TaskNPC and TaskNPC ~= "" then
+                        mq.cmdf('/target "%s"', TaskNPC)
+                        print(string.format("[GQT] Targeting TaskNPC: %s", TaskNPC))
+                    else
+                        print("[GQT] No TaskNPC set - accept a task first")
+                    end
+                end
 
                 ImGui.EndTabItem()
             end
@@ -1210,7 +1149,18 @@ local function GroupTaskTrackerGUI()
                 ImGui.BulletText("Click 'Loot All' button")
                 ImGui.BulletText("Opens Advanced Loot window for all group members")
                 ImGui.BulletText("Clicks all loot buttons in Personal Loot list")
-                ImGui.BulletText("Pauses and resumes boxr automatically")
+                ImGui.Separator()
+
+                ImGui.TextColored(1, 1, 0.5, 1, "Pickup Ground Spawn:")
+                ImGui.BulletText("Click 'Pickup Ground Spawn' button")
+                ImGui.BulletText("Members behind on task progress will pick up nearest ground spawn")
+                ImGui.BulletText("If all members are on same step, all will attempt pickup")
+                ImGui.Separator()
+
+                ImGui.TextColored(1, 1, 0.5, 1, "Target Task NPC:")
+                ImGui.BulletText("When accepting a task, the targeted NPC is saved")
+                ImGui.BulletText("Click 'Target Task NPC' to target that NPC again")
+                ImGui.BulletText("Useful for returning to quest giver to turn in")
                 ImGui.Separator()
 
                 ImGui.TextColored(1, 1, 0.5, 1, "Commands:")
@@ -1218,31 +1168,6 @@ local function GroupTaskTrackerGUI()
                 ImGui.BulletText("/gqtstop - Stop the script")
                 ImGui.BulletText("/gqtrefresh - Refresh group and task data")
                 ImGui.BulletText("/gqtcleanup - Clear all DanNet observers (dev use)")
-
-                ImGui.EndTabItem()
-            end
-
-            -- TODO Tab
-            if ImGui.BeginTabItem("TODO") then
-                ImGui.TextColored(1, 0.7, 0.3, 1, "Development TODO List")
-                ImGui.Separator()
-
-                ImGui.Text("[ ] Revisit Quest objective iteration")
-                ImGui.TextWrapped("   - Current method iterates up to 30 objectives")
-                ImGui.TextWrapped("   - ObjectiveCount TLO member returns nil via DanNet")
-                ImGui.TextWrapped("   - Need to find better way to determine objective count")
-                ImGui.Separator()
-
-                ImGui.Text("[ ] Investigate event-driven invisible status updates")
-                ImGui.TextWrapped("   - Currently polling every 200ms for invis/ivu status")
-                ImGui.TextWrapped("   - Check if possible to listen for buff changes instead")
-                ImGui.TextWrapped("   - Would reduce DanNet query overhead significantly")
-                ImGui.Separator()
-
-                ImGui.Text("[ ] Remove /gqtcleanup command after development")
-                ImGui.TextWrapped("   - Cleanup command currently needed for stale observers")
-                ImGui.TextWrapped("   - Should not be needed once observer management is stable")
-                ImGui.Separator()
 
                 ImGui.EndTabItem()
             end
@@ -1267,8 +1192,22 @@ mq.bind('/gqtstop', function()
 end)
 
 mq.bind('/gqtrefresh', function()
+    -- Clear all task observers and recreate them
+    DropAllObservers()
+    taskObserverState = {}
     UpdateGroupMembers()
     UpdateAvailableTasks()
+    if selectedTaskID then
+        -- Recreate observers for all remote members
+        local myName = mq.TLO.Me.CleanName()
+        for _, memberName in ipairs(groupMembers) do
+            if memberName ~= myName then
+                SetupTaskObserversForCharacter(memberName, selectedTaskID)
+            end
+        end
+        needsProgressUpdate = true
+    end
+    print("[GQT] Refreshed - observers recreated")
 end)
 
 mq.bind('/gqtcleanup', function()
@@ -1322,13 +1261,33 @@ end
 while Open do
     local currentTime = os.clock() * 1000
 
-    if needsProgressUpdate and not lootState.active and not pickupState.active and not hailState.active and not turninState.active and not useItemState.active and not clickAreaState.active then
+    -- Handle deferred refresh (from Refresh button click in ImGui)
+    if needsRefresh then
+        needsRefresh = false
+        DropAllObservers()
+        taskObserverState = {}
+        UpdateGroupMembers()
+        UpdateAvailableTasks()
+        if selectedTaskID then
+            -- Recreate observers for all remote members
+            local myName = mq.TLO.Me.CleanName()
+            for _, memberName in ipairs(groupMembers) do
+                if memberName ~= myName then
+                    SetupTaskObserversForCharacter(memberName, selectedTaskID)
+                end
+            end
+            needsProgressUpdate = true
+        end
+        print("[GQT] Refreshed - observers recreated")
+    end
+
+    if needsProgressUpdate and not lootState.active and not pickupState.active and not hailState.active and not turninState.active and not useItemState.active then
         needsProgressUpdate = false
         UpdateTaskProgress()
     end
 
     -- Update group members and tasks every UPDATE_INTERVAL (skip during any active state machine to avoid blocking)
-    if not lootState.active and not pickupState.active and not hailState.active and not turninState.active and not useItemState.active and not clickAreaState.active and currentTime - lastUpdate > UPDATE_INTERVAL then
+    if not lootState.active and not pickupState.active and not hailState.active and not turninState.active and not useItemState.active and currentTime - lastUpdate > UPDATE_INTERVAL then
         local previousMemberCount = #groupMembers
         UpdateGroupMembers()
 
@@ -1620,56 +1579,6 @@ while Open do
         else
             useItemState.active = false
             print("[GQT] Use item complete!")
-        end
-    end
-
-    -- Process click area state machine
-    if clickAreaState.active then
-        local currentTime = os.clock() * 1000
-        local myName = mq.TLO.Me.CleanName()
-
-        -- Wait for delay between commands
-        if clickAreaState.lastCommandTime > 0 and (currentTime - clickAreaState.lastCommandTime < clickAreaState.commandDelay) then
-            -- Still waiting
-        else
-            if clickAreaState.phase == "navigating" then
-                -- Navigate selected members to driver's location simultaneously
-                print(string.format("[GQT] %d member(s) navigating to driver", #clickAreaState.membersToClick))
-                for _, memberName in ipairs(clickAreaState.membersToClick) do
-                    if memberName ~= myName then
-                        mq.cmdf('/dex %s /nav id %d', memberName, mq.TLO.Me.ID())
-                    end
-                end
-                clickAreaState.phase = "looking"
-                clickAreaState.lastCommandTime = currentTime
-
-            elseif clickAreaState.phase == "looking" then
-                -- Selected members look down simultaneously
-                print(string.format("[GQT] %d member(s) looking down", #clickAreaState.membersToClick))
-                for _, memberName in ipairs(clickAreaState.membersToClick) do
-                    if memberName == myName then
-                        mq.cmd('/look -90')
-                    else
-                        mq.cmdf('/dex %s /look -90', memberName)
-                    end
-                end
-                clickAreaState.phase = "clicking"
-                clickAreaState.lastCommandTime = currentTime
-
-            elseif clickAreaState.phase == "clicking" then
-                -- Selected members click center screen simultaneously
-                print(string.format("[GQT] %d member(s) clicking center screen", #clickAreaState.membersToClick))
-                for _, memberName in ipairs(clickAreaState.membersToClick) do
-                    if memberName == myName then
-                        mq.cmd('/click left center')
-                    else
-                        mq.cmdf('/dex %s /click left center', memberName)
-                    end
-                end
-                clickAreaState.active = false
-                clickAreaState.phase = "idle"
-                print("[GQT] Click area complete!")
-            end
         end
     end
 

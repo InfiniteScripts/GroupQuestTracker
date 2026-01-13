@@ -7,13 +7,14 @@ A MacroQuest Lua script for tracking EverQuest task progress across all group me
 - **Real-time Task Tracking**: See current task objective and progress for all group members
 - **Invisible/IVU Status**: Monitor invis and invis vs undead status for the entire group
 - **Group Actions**: Coordinate group-wide actions like:
-  - Accept Task - All members accept the task window
+  - Accept Task - All members accept the task window (saves NPC for later targeting)
   - Turn in Item - All members turn in items to targeted NPC
   - Hail - All members hail the target based on task progress
   - Inspect - All members inspect the target
   - Use Item - All members use a held item on the target
-  - Loot All - All members loot nearby corpses
-  - Pick Up - All members pick up nearby ground spawns
+  - Loot All - All members loot from Advanced Loot personal list
+  - Pickup Ground Spawn - Members behind on progress pick up nearest ground spawn
+  - Target Task NPC - Target the NPC you accepted the task from
 
 ## Requirements
 
@@ -50,6 +51,8 @@ A MacroQuest Lua script for tracking EverQuest task progress across all group me
    - Put item on cursor and target NPC, then click "Turn in Item"
    - Target NPC and click "Hail" for hail objectives
    - Target NPC and click "Inspect" for inspect objectives
+   - Click "Pickup Ground Spawn" for ground spawn objectives
+   - Click "Target Task NPC" to target the quest giver again
 
 ### Tips
 

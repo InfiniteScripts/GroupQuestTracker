@@ -971,8 +971,7 @@ local function GroupTaskTrackerGUI()
         return
     end
 
-    local success, err = pcall(function()
-        if ImGui.BeginTabBar("MainTabs") then
+    if ImGui.BeginTabBar("MainTabs") then
             -- Progress Tab (position 1)
             if ImGui.BeginTabItem("Group Task Tracker", nil, selectedTab == 0 and ImGuiTabItemFlags.SetSelected or 0) then
                 if selectedTab == 0 then selectedTab = -1 end  -- Clear flag after first render
@@ -1248,15 +1247,10 @@ local function GroupTaskTrackerGUI()
                 ImGui.EndTabItem()
             end
 
-            ImGui.EndTabBar()
-        end
-    end)
+        ImGui.EndTabBar()
+    end
 
     ImGui.End()
-
-    if not success then
-        print(string.format("\ar[ERROR] %s", tostring(err)))
-    end
 end
 
 ----------------------------------------------------------------------

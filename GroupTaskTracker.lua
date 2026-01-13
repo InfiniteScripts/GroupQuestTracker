@@ -1102,7 +1102,6 @@ local function GroupTaskTrackerGUI()
                 ImGui.Separator()
 
                 ImGui.TextColored(1, 1, 0.5, 1, "Setup:")
-                ImGui.BulletText("Run this script on all group members")
                 ImGui.BulletText("All characters must be in the same group")
                 ImGui.BulletText("DanNet must be running on all clients")
                 ImGui.BulletText("Mercenaries are automatically ignored")

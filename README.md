@@ -45,10 +45,9 @@ A MacroQuest Lua script for tracking EverQuest task progress across all group me
 
 ### How to Use
 
-1. **Start the script** on all group members
-2. **Select a task** from the Task Selection tab
-3. **Monitor progress** - The main tab shows each member's current objective
-4. **Use group actions** as needed:
+1. **Select a task** from the Task Selection tab
+2. **Monitor progress** - The main tab shows each member's current objective
+3. **Use group actions** as needed:
    - Put item on cursor and target NPC, then click "Turn in Item"
    - Target NPC and click "Hail" for hail objectives
    - Target NPC and click "Inspect" for inspect objectives

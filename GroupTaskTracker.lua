@@ -1,8 +1,8 @@
 --[[
-    GroupQuestTracker.lua
+    GroupTaskTracker.lua
     Task progress tracker for EQ group members
     
-    Usage: /lua run GroupQuestTracker
+    Usage: /lua run GroupTaskTracker
     Commands: /gqt (toggle UI), /gqtstop (stop), /gqtrefresh
 ]]
 
@@ -10,25 +10,25 @@ local mq = require('mq')
 require('ImGui')
 
 -- Configuration
-local SCRIPT_NAME = "Group Quest Tracker"
+local SCRIPT_NAME = "Group Task Tracker"
 local UPDATE_INTERVAL = 1000  -- Update every 1 second to reduce DanNet load
-local QUEST_QUERY_COOLDOWN = 500
+local TASK_QUERY_COOLDOWN = 500
 
 -- UI State
 local Open = true
 local ShowUI = true
-local selectedTab = 1  -- 0 = Group Quest Tracker, 1 = Task Selection
+local selectedTab = 1  -- 0 = Group Task Tracker, 1 = Task Selection
 
 -- Data Storage
 local groupMembers = {}
-local selectedQuest = ""
-local selectedQuestID = nil
-local availableQuests = {}
-local questProgress = {}
-local previousQuestProgress = {}  -- Track previous state to detect changes
+local selectedTask = ""
+local selectedTaskID = nil
+local availableTasks = {}
+local taskProgress = {}
+local previousTaskProgress = {}  -- Track previous state to detect changes
 local lastUpdate = 0
-local isQueryingQuests = false
-local lastQuestQuery = 0
+local isQueryingTasks = false
+local lastTaskQuery = 0
 local needsProgressUpdate = false
 
 -- Checkbox states for each member
@@ -224,11 +224,11 @@ local function DanNetQuery(characterName, query)
     return result
 end
 
--- Track quest progress state for each character
-local questObserverState = {} -- [characterName] = { taskID, currentObjective, stepQuery, statusQuery }
+-- Track task progress state for each character
+local taskObserverState = {} -- [characterName] = { taskID, currentObjective, stepQuery, statusQuery }
 
--- Set up initial quest observers for a character - find task slot by matching Task.ID
-local function SetupQuestObserversForCharacter(characterName, taskID)
+-- Set up initial task observers for a character - find task slot by matching Task.ID
+local function SetupTaskObserversForCharacter(characterName, taskID)
     local myName = mq.TLO.Me.CleanName()
     if characterName == myName then return end
 
@@ -251,7 +251,7 @@ local function SetupQuestObserversForCharacter(characterName, taskID)
     end
 
     if not taskSlot then
-        questObserverState[cleanName] = { taskID = taskID, taskSlot = nil, currentObjective = nil, complete = false, hasQuest = false }
+        taskObserverState[cleanName] = { taskID = taskID, taskSlot = nil, currentObjective = nil, complete = false, hasTask = false }
         return
     end
 
@@ -259,15 +259,15 @@ local function SetupQuestObserversForCharacter(characterName, taskID)
     local stepQuery = string.format('Task[%d].Step', taskSlot)
     if not persistentObservers[cleanName] or not persistentObservers[cleanName][stepQuery] then
         CreatePersistentObserver(characterName, stepQuery)
-        mq.delay(100)
+        mq.delay(200)
     end
 
     -- Read the current step text
     local stepText = ReadPersistentObserver(characterName, stepQuery)
 
     if not stepText or stepText == "" or stepText == "NULL" then
-        -- Character may have completed the quest
-        questObserverState[cleanName] = { taskID = taskID, taskSlot = taskSlot, currentObjective = nil, stepQuery = stepQuery, complete = true, hasQuest = true }
+        -- Character may have completed the task
+        taskObserverState[cleanName] = { taskID = taskID, taskSlot = taskSlot, currentObjective = nil, stepQuery = stepQuery, complete = true, hasTask = true }
         return
     end
 
@@ -292,8 +292,8 @@ local function SetupQuestObserversForCharacter(characterName, taskID)
     end
 
     if not currentObjective then
-        -- Couldn't find matching objective, quest may be complete
-        questObserverState[cleanName] = { taskID = taskID, taskSlot = taskSlot, currentObjective = nil, stepQuery = stepQuery, complete = true, hasQuest = true }
+        -- Couldn't find matching objective, task may be complete
+        taskObserverState[cleanName] = { taskID = taskID, taskSlot = taskSlot, currentObjective = nil, stepQuery = stepQuery, complete = true, hasTask = true }
         return
     end
 
@@ -305,33 +305,33 @@ local function SetupQuestObserversForCharacter(characterName, taskID)
     end
 
     -- Store the state
-    questObserverState[cleanName] = {
+    taskObserverState[cleanName] = {
         taskID = taskID,
         taskSlot = taskSlot,
         currentObjective = currentObjective,
         stepQuery = stepQuery,
         statusQuery = statusQuery,
         complete = false,
-        hasQuest = true
+        hasTask = true
     }
 end
 
--- Update quest observer when objective completes - drop old status observer, find new objective
-local function UpdateQuestObserverForCharacter(characterName, taskID)
+-- Update task observer when objective completes - drop old status observer, find new objective
+local function UpdateTaskObserverForCharacter(characterName, taskID)
     local myName = mq.TLO.Me.CleanName()
     if characterName == myName then return end
 
     local cleanName = characterName:gsub("'s corpse$", "")
-    local state = questObserverState[cleanName]
+    local state = taskObserverState[cleanName]
 
     if not state or not state.taskSlot then
         -- No state yet, set up from scratch
-        SetupQuestObserversForCharacter(characterName, taskID)
+        SetupTaskObserversForCharacter(characterName, taskID)
         return
     end
 
-    -- If character doesn't have the quest, nothing to update
-    if not state.hasQuest then
+    -- If character doesn't have the task, nothing to update
+    if not state.hasTask then
         return
     end
 
@@ -377,7 +377,7 @@ local function UpdateQuestObserverForCharacter(characterName, taskID)
                 state.statusQuery = newStatusQuery
                 state.complete = false
             else
-                -- No matching objective found, quest may be complete
+                -- No matching objective found, task may be complete
                 state.currentObjective = nil
                 state.statusQuery = nil
                 state.complete = true
@@ -386,39 +386,39 @@ local function UpdateQuestObserverForCharacter(characterName, taskID)
     end
 end
 
--- Read quest progress from persistent observers
-local function ReadQuestProgressFromObservers(characterName)
+-- Read task progress from persistent observers
+local function ReadTaskProgressFromObservers(characterName)
     local cleanName = characterName:gsub("'s corpse$", "")
-    local state = questObserverState[cleanName]
+    local state = taskObserverState[cleanName]
 
     if not state then
-        return { hasQuest = false, currentStep = "Not on quest", objectives = {} }
+        return { hasTask = false, currentStep = "Not on task", objectives = {} }
     end
 
-    -- Character doesn't have the quest
-    if not state.hasQuest then
-        return { hasQuest = false, currentStep = "Not on quest", objectives = {} }
+    -- Character doesn't have the task
+    if not state.hasTask then
+        return { hasTask = false, currentStep = "Not on task", objectives = {} }
     end
 
     if state.complete then
-        return { hasQuest = true, currentStep = "All Complete!", objectives = {}, currentObjective = nil }
+        return { hasTask = true, currentStep = "All Complete!", objectives = {}, currentObjective = nil }
     end
 
     if not state.stepQuery then
-        return { hasQuest = false, currentStep = "Not on quest", objectives = {} }
+        return { hasTask = false, currentStep = "Not on task", objectives = {} }
     end
 
     local stepText = ReadPersistentObserver(characterName, state.stepQuery)
     local status = state.statusQuery and ReadPersistentObserver(characterName, state.statusQuery) or "Unknown"
 
     if not stepText or stepText == "" or stepText == "NULL" then
-        return { hasQuest = true, currentStep = "All Complete!", objectives = {}, currentObjective = nil }
+        return { hasTask = true, currentStep = "All Complete!", objectives = {}, currentObjective = nil }
     end
 
     local currentStep = string.format("%s (%s)", stepText, status or "Unknown")
 
     return {
-        hasQuest = true,
+        hasTask = true,
         currentStep = currentStep,
         objectives = {},
         currentObjective = state.currentObjective
@@ -448,15 +448,15 @@ local function UpdateGroupMembers()
 end
 
 -- Get local tasks
-local function UpdateAvailableQuests()
-    availableQuests = {}
+local function UpdateAvailableTasks()
+    availableTasks = {}
     
     for i = 1, 20 do
         local taskTitle = mq.TLO.Task(i).Title()
         local taskID = mq.TLO.Task(i).ID()
         
         if taskTitle and taskTitle ~= "" and taskTitle ~= "NULL" and taskID then
-            table.insert(availableQuests, {
+            table.insert(availableTasks, {
                 index = i,
                 title = taskTitle,
                 id = taskID,
@@ -466,11 +466,11 @@ local function UpdateAvailableQuests()
     end
 end
 
--- Get local quest progress
-local function GetQuestProgress(taskID)
+-- Get local task progress
+local function GetTaskProgress(taskID)
     local progress = {
-        hasQuest = false,
-        currentStep = "Not on quest",
+        hasTask = false,
+        currentStep = "Not on task",
         objectives = {}
     }
     
@@ -478,7 +478,7 @@ local function GetQuestProgress(taskID)
         local id = mq.TLO.Task(i).ID()
         
         if id and tostring(id) == tostring(taskID) then
-            progress.hasQuest = true
+            progress.hasTask = true
             
             for j = 1, 30 do
                 local objective = mq.TLO.Task(i).Objective(j)
@@ -500,7 +500,7 @@ local function GetQuestProgress(taskID)
                     status = objStatus
                 })
                 
-                if not objDone and progress.currentStep == "Not on quest" then
+                if not objDone and progress.currentStep == "Not on task" then
                     if objStatus then
                         progress.currentStep = string.format("%s (%s)", objText, objStatus)
                     else
@@ -510,7 +510,7 @@ local function GetQuestProgress(taskID)
                 end
             end
             
-            if progress.currentStep == "Not on quest" and #progress.objectives > 0 then
+            if progress.currentStep == "Not on task" and #progress.objectives > 0 then
                 progress.currentStep = "All Complete!"
             end
             break
@@ -520,12 +520,12 @@ local function GetQuestProgress(taskID)
     return progress
 end
 
--- Get remote quest list - optimized
-local function GetRemoteQuestList(characterName)
-    local quests = {}
+-- Get remote task list - optimized
+local function GetRemoteTaskList(characterName)
+    local tasks = {}
     
     if not characterName or characterName == "" then
-        return quests
+        return tasks
     end
     
     -- Only check first 5 task slots
@@ -535,20 +535,20 @@ local function GetRemoteQuestList(characterName)
         
         local taskTitle = DanNetQuery(characterName, string.format('Task[%d].Title', i))
         if taskTitle then
-            table.insert(quests, {
+            table.insert(tasks, {
                 title = taskTitle,
                 id = tonumber(taskID)
             })
         end
     end
     
-    return quests
+    return tasks
 end
 
 -- Query remote progress by ID - using transient observers
-local function QueryRemoteProgress(characterName, taskID)
+local function QueryRemoteTaskProgress(characterName, taskID)
     if not taskID or not characterName or characterName == "" then
-        return {hasQuest = false, currentStep = "Not on quest", objectives = {}}
+        return {hasTask = false, currentStep = "Not on task", objectives = {}}
     end
 
     local cleanName = characterName:gsub("'s corpse$", "")
@@ -567,11 +567,11 @@ local function QueryRemoteProgress(characterName, taskID)
     end
 
     if not taskSlot then
-        return {hasQuest = false, currentStep = "Not on quest", objectives = {}}
+        return {hasTask = false, currentStep = "Not on task", objectives = {}}
     end
 
     -- Find the current active objective using Task.Step
-    local progress = {hasQuest = true, currentStep = "Not on quest", objectives = {}}
+    local progress = {hasTask = true, currentStep = "Not on task", objectives = {}}
 
     -- Get the current step instruction text
     local stepIndex = DanNetQuery(characterName, string.format('Task[%d].Step', taskSlot))
@@ -608,7 +608,7 @@ local function QueryRemoteProgress(characterName, taskID)
     end
 
     -- Fallback: find first non-Done objective if we didn't find a match
-    if progress.currentStep == "Not on quest" then
+    if progress.currentStep == "Not on task" then
         for _, obj in ipairs(allObjectives) do
             if obj.status and obj.status ~= "" and obj.status ~= "NULL" and obj.status ~= "Done" then
                 progress.currentStep = string.format("%s (%s)", obj.instruction, obj.status)
@@ -619,7 +619,7 @@ local function QueryRemoteProgress(characterName, taskID)
     end
 
     -- If we went through all objectives and didn't find an incomplete one, mark as complete
-    if progress.currentStep == "Not on quest" then
+    if progress.currentStep == "Not on task" then
         progress.currentStep = "All Complete!"
     end
 
@@ -628,30 +628,30 @@ end
 
 
 -- Update all progress using persistent observers
-local function UpdateQuestProgress()
-    if not selectedQuestID then return end
+local function UpdateTaskProgress()
+    if not selectedTaskID then return end
 
     local newProgress = {}
     local myName = mq.TLO.Me.CleanName()
 
     for _, memberName in ipairs(groupMembers) do
         if memberName == myName then
-            newProgress[memberName] = GetQuestProgress(selectedQuestID)
+            newProgress[memberName] = GetTaskProgress(selectedTaskID)
         else
             -- Update observer state (handles objective completion transitions)
-            UpdateQuestObserverForCharacter(memberName, selectedQuestID)
+            UpdateTaskObserverForCharacter(memberName, selectedTaskID)
             -- Read progress from observers
-            newProgress[memberName] = ReadQuestProgressFromObservers(memberName)
+            newProgress[memberName] = ReadTaskProgressFromObservers(memberName)
         end
     end
 
-    -- Only update if something changed OR if questProgress is empty (first run)
+    -- Only update if something changed OR if taskProgress is empty (first run)
     local hasChanged = false
-    local isEmpty = next(questProgress) == nil
+    local isEmpty = next(taskProgress) == nil
 
     if not isEmpty then
         for memberName, progress in pairs(newProgress) do
-            local oldProgress = previousQuestProgress[memberName]
+            local oldProgress = previousTaskProgress[memberName]
             if not oldProgress or oldProgress.currentStep ~= progress.currentStep then
                 hasChanged = true
                 break
@@ -660,10 +660,10 @@ local function UpdateQuestProgress()
     end
 
     if hasChanged or isEmpty then
-        questProgress = newProgress
-        previousQuestProgress = {}
+        taskProgress = newProgress
+        previousTaskProgress = {}
         for k, v in pairs(newProgress) do
-            previousQuestProgress[k] = {currentStep = v.currentStep, hasQuest = v.hasQuest}
+            previousTaskProgress[k] = {currentStep = v.currentStep, hasTask = v.hasTask}
         end
     end
 end
@@ -756,17 +756,17 @@ end
 
 -- Pick up ground spawn - find members behind the highest step count and have them pick up nearest ground spawn
 local function PickupGroundSpawn()
-    if not selectedQuestID then
-        print("[GQT] No quest selected!")
+    if not selectedTaskID then
+        print("[GQT] No task selected!")
         return
     end
 
-    -- Check if we have any quest progress data and track which step each member is on
+    -- Check if we have any task progress data and track which step each member is on
     local memberStepNumbers = {}
     local highestStep = 0
 
     for _, memberName in ipairs(groupMembers) do
-        local progress = questProgress[memberName]
+        local progress = taskProgress[memberName]
         if progress and progress.currentObjective then
             -- Track which step number (objective number) this member is on
             local stepNumber = progress.currentObjective
@@ -786,7 +786,7 @@ local function PickupGroundSpawn()
 
     -- If we have no member data at all, return early
     if next(memberStepNumbers) == nil then
-        print("[GQT] No quest progress data available - wait for progress to load")
+        print("[GQT] No task progress data available - wait for progress to load")
         return
     end
 
@@ -813,17 +813,17 @@ end
 
 -- Click area - have all group members navigate to driver, look down, and click center screen
 local function ClickArea()
-    if not selectedQuestID then
-        print("[GQT] No quest selected!")
+    if not selectedTaskID then
+        print("[GQT] No task selected!")
         return
     end
 
-    -- Check if we have any quest progress data and track which step each member is on
+    -- Check if we have any task progress data and track which step each member is on
     local memberStepNumbers = {}
     local highestStep = 0
 
     for _, memberName in ipairs(groupMembers) do
-        local progress = questProgress[memberName]
+        local progress = taskProgress[memberName]
         if progress and progress.currentObjective then
             -- Track which step number (objective number) this member is on
             local stepNumber = progress.currentObjective
@@ -843,7 +843,7 @@ local function ClickArea()
 
     -- If we have no member data at all, return early
     if next(memberStepNumbers) == nil then
-        print("[GQT] No quest progress data available - wait for progress to load")
+        print("[GQT] No task progress data available - wait for progress to load")
         return
     end
 
@@ -882,10 +882,10 @@ local function PerformHails()
         return
     end
 
-    -- Get the driver's quest progress and extract the number
-    local myProgress = questProgress[myName]
+    -- Get the driver's task progress and extract the number
+    local myProgress = taskProgress[myName]
     if not myProgress or not myProgress.currentStep then
-        print("[GQT] No quest progress to read!")
+        print("[GQT] No task progress to read!")
         return
     end
 
@@ -956,7 +956,7 @@ end
 -- ImGui UI
 ----------------------------------------------------------------------
 
-local function GroupQuestTrackerGUI()
+local function GroupTaskTrackerGUI()
     if not ShowUI then return end
 
     local shouldShow
@@ -970,14 +970,14 @@ local function GroupQuestTrackerGUI()
     local success, err = pcall(function()
         if ImGui.BeginTabBar("MainTabs") then
             -- Progress Tab (position 1)
-            if ImGui.BeginTabItem("Group Quest Tracker", nil, selectedTab == 0 and ImGuiTabItemFlags.SetSelected or 0) then
+            if ImGui.BeginTabItem("Group Task Tracker", nil, selectedTab == 0 and ImGuiTabItemFlags.SetSelected or 0) then
                 if selectedTab == 0 then selectedTab = -1 end  -- Clear flag after first render
                 ImGui.Text(string.format("Group: %d members", #groupMembers))
                 ImGui.Separator()
 
                 -- Progress table
-                if selectedQuestID then
-                    ImGui.Text(string.format("Tracking: %s", selectedQuest))
+                if selectedTaskID then
+                    ImGui.Text(string.format("Tracking: %s", selectedTask))
                     ImGui.Separator()
 
                     if ImGui.BeginTable("Progress", 4, ImGuiTableFlags.Borders + ImGuiTableFlags.RowBg) then
@@ -1028,9 +1028,9 @@ local function GroupQuestTrackerGUI()
                             -- Progress column
                             ImGui.TableSetColumnIndex(3)
 
-                            local prog = questProgress[memberName]
+                            local prog = taskProgress[memberName]
                             if prog then
-                                if prog.hasQuest then
+                                if prog.hasTask then
                                     local stepText = prog.currentStep or "Unknown"
                                     if stepText == "All Complete!" then
                                         ImGui.TextColored(0.5, 1, 0.5, 1, "[DONE] All Complete!")
@@ -1038,7 +1038,7 @@ local function GroupQuestTrackerGUI()
                                         ImGui.TextColored(1, 1, 0.5, 1, stepText)
                                     end
                                 else
-                                    ImGui.TextColored(0.7, 0.7, 0.7, 1, prog.currentStep or "Not on quest")
+                                    ImGui.TextColored(0.7, 0.7, 0.7, 1, prog.currentStep or "Not on task")
                                 end
                             else
                                 ImGui.TextColored(0.7, 0.7, 0.7, 1, "...")
@@ -1056,8 +1056,8 @@ local function GroupQuestTrackerGUI()
 
                 if ImGui.Button("Refresh") then
                     UpdateGroupMembers()
-                    UpdateAvailableQuests()
-                    if selectedQuestID then
+                    UpdateAvailableTasks()
+                    if selectedTaskID then
                         needsProgressUpdate = true
                     end
                 end
@@ -1112,7 +1112,7 @@ local function GroupQuestTrackerGUI()
             if ImGui.BeginTabItem("Task Selection", nil, selectedTab == 1 and ImGuiTabItemFlags.SetSelected or 0) then
                 if selectedTab == 1 then selectedTab = -1 end  -- Clear flag after first render
 
-                ImGui.Text(string.format("Your Tasks: %d", #availableQuests))
+                ImGui.Text(string.format("Your Tasks: %d", #availableTasks))
                 ImGui.Separator()
 
                 ImGui.TextColored(0.7, 0.9, 1, 1, "Instructions:")
@@ -1120,30 +1120,30 @@ local function GroupQuestTrackerGUI()
                 ImGui.Separator()
 
                 -- Quest list
-                if #availableQuests > 0 then
-                    for i, quest in ipairs(availableQuests) do
-                        local label = quest.title
-                        if quest.sharedCount > 0 then
-                            label = string.format("%s [%d/%d]", quest.title, quest.sharedCount, #groupMembers)
-                            if quest.sharedCount == #groupMembers then
+                if #availableTasks > 0 then
+                    for i, task in ipairs(availableTasks) do
+                        local label = task.title
+                        if task.sharedCount > 0 then
+                            label = string.format("%s [%d/%d]", task.title, task.sharedCount, #groupMembers)
+                            if task.sharedCount == #groupMembers then
                                 label = label .. " ✓"
                             end
                         end
 
-                        if ImGui.Selectable(label, selectedQuestID == quest.id) then
-                            if selectedQuestID ~= quest.id then
-                                selectedQuest = quest.title
-                                selectedQuestID = quest.id
-                                -- Clear old quest observer state and set up new observers
-                                questObserverState = {}
+                        if ImGui.Selectable(label, selectedTaskID == task.id) then
+                            if selectedTaskID ~= task.id then
+                                selectedTask = task.title
+                                selectedTaskID = task.id
+                                -- Clear old task observer state and set up new observers
+                                taskObserverState = {}
                                 local myName = mq.TLO.Me.CleanName()
                                 for _, memberName in ipairs(groupMembers) do
                                     if memberName ~= myName then
-                                        SetupQuestObserversForCharacter(memberName, quest.id)
+                                        SetupTaskObserversForCharacter(memberName, task.id)
                                     end
                                 end
                                 needsProgressUpdate = true
-                                selectedTab = 0  -- Switch to Group Quest Tracker tab
+                                selectedTab = 0  -- Switch to Group Task Tracker tab
                             end
                         end
                     end
@@ -1156,7 +1156,7 @@ local function GroupQuestTrackerGUI()
 
             -- Instructions Tab
             if ImGui.BeginTabItem("Instructions") then
-                ImGui.TextColored(0.7, 0.9, 1, 1, "How to Use Group Quest Tracker")
+                ImGui.TextColored(0.7, 0.9, 1, 1, "How to Use Group Task Tracker")
                 ImGui.Separator()
 
                 ImGui.TextColored(1, 1, 0.5, 1, "Setup:")
@@ -1196,10 +1196,10 @@ local function GroupQuestTrackerGUI()
                 ImGui.Separator()
 
                 ImGui.TextColored(1, 1, 0.5, 1, "Hails:")
-                ImGui.BulletText("Select a quest with a hail objective")
+                ImGui.BulletText("Select a task with a hail step")
                 ImGui.BulletText("Target the NPC to hail")
                 ImGui.BulletText("Click 'Hails' button")
-                ImGui.BulletText("Pauses boxr, all members hail based on quest progress number")
+                ImGui.BulletText("Pauses boxr, all members hail based on task progress number")
                 ImGui.BulletText("Resumes boxr when complete")
                 ImGui.Separator()
 
@@ -1270,7 +1270,7 @@ end)
 
 mq.bind('/gqtrefresh', function()
     UpdateGroupMembers()
-    UpdateAvailableQuests()
+    UpdateAvailableTasks()
 end)
 
 mq.bind('/gqtcleanup', function()
@@ -1296,26 +1296,26 @@ end)
 -- MAIN
 ----------------------------------------------------------------------
 
-mq.imgui.init('groupquesttracker', GroupQuestTrackerGUI)
+mq.imgui.init('grouptasktracker', GroupTaskTrackerGUI)
 
 
 
 print(string.format("\ay[\at%s\ay] \agStarted - /gqt to toggle, /gqtstop to exit, /gqtcleanup to clear observers", SCRIPT_NAME))
 
 UpdateGroupMembers()
-UpdateAvailableQuests()
+UpdateAvailableTasks()
 
--- Auto-select quest if driver only has one quest on startup
-if #availableQuests == 1 then
-    selectedQuest = availableQuests[1].title
-    selectedQuestID = availableQuests[1].id
-    selectedTab = 0  -- Switch to Group Quest Tracker tab
-    print(string.format("[GQT] Auto-selected quest: %s", selectedQuest))
-    -- Set up quest observers for all remote members
+-- Auto-select task if driver only has one task on startup
+if #availableTasks == 1 then
+    selectedTask = availableTasks[1].title
+    selectedTaskID = availableTasks[1].id
+    selectedTab = 0  -- Switch to Group Task Tracker tab
+    print(string.format("[GQT] Auto-selected task: %s", selectedTask))
+    -- Set up task observers for all remote members
     local myName = mq.TLO.Me.CleanName()
     for _, memberName in ipairs(groupMembers) do
         if memberName ~= myName then
-            SetupQuestObserversForCharacter(memberName, selectedQuestID)
+            SetupTaskObserversForCharacter(memberName, selectedTaskID)
         end
     end
     needsProgressUpdate = true
@@ -1326,18 +1326,18 @@ while Open do
 
     if needsProgressUpdate and not lootState.active and not pickupState.active and not hailState.active and not turninState.active and not useItemState.active and not clickAreaState.active then
         needsProgressUpdate = false
-        UpdateQuestProgress()
+        UpdateTaskProgress()
     end
 
-    -- Update group members and quests every UPDATE_INTERVAL (skip during any active state machine to avoid blocking)
+    -- Update group members and tasks every UPDATE_INTERVAL (skip during any active state machine to avoid blocking)
     if not lootState.active and not pickupState.active and not hailState.active and not turninState.active and not useItemState.active and not clickAreaState.active and currentTime - lastUpdate > UPDATE_INTERVAL then
         local previousMemberCount = #groupMembers
         UpdateGroupMembers()
 
-        UpdateAvailableQuests()
-        -- Also update quest progress if we have a selected quest
-        if selectedQuestID then
-            UpdateQuestProgress()
+        UpdateAvailableTasks()
+        -- Also update task progress if we have a selected task
+        if selectedTaskID then
+            UpdateTaskProgress()
         end
         lastUpdate = currentTime
     end

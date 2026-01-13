@@ -21,6 +21,7 @@ A MacroQuest Lua script for tracking EverQuest task progress across all group me
 - MacroQuest with Lua support
 - DanNet plugin running on all clients
 - All characters must be in the same group
+- Mercenaries are automatically ignored
 
 ## Installation
 

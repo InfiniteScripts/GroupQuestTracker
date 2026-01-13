@@ -35,6 +35,8 @@ local isQueryingTasks = false
 local lastTaskQuery = 0
 local needsProgressUpdate = false
 local needsRefresh = false  -- Flag for deferred refresh (to avoid mq.delay in ImGui callback)
+local needsTaskSetup = false  -- Flag for deferred task observer setup
+local pendingTaskID = nil  -- Task ID to set up observers for
 local TaskNPC = nil  -- Store the NPC targeted when accepting a task
 
 -- Checkbox states for each member
@@ -434,8 +436,11 @@ local function UpdateGroupMembers()
 
     local groupSize = mq.TLO.Group.Members() or 0
     for i = 1, groupSize do
-        local memberName = mq.TLO.Group.Member(i).CleanName()
-        if memberName and memberName ~= "" then
+        local member = mq.TLO.Group.Member(i)
+        local memberName = member.CleanName()
+        local memberType = member.Type()
+        -- Skip mercenaries
+        if memberName and memberName ~= "" and memberType ~= "Mercenary" then
             table.insert(groupMembers, memberName)
         end
     end
@@ -1076,15 +1081,10 @@ local function GroupTaskTrackerGUI()
                             if selectedTaskID ~= task.id then
                                 selectedTask = task.title
                                 selectedTaskID = task.id
-                                -- Clear old task observer state and set up new observers
+                                -- Defer observer setup to main loop (mq.delay cannot be called from ImGui)
                                 taskObserverState = {}
-                                local myName = mq.TLO.Me.CleanName()
-                                for _, memberName in ipairs(groupMembers) do
-                                    if memberName ~= myName then
-                                        SetupTaskObserversForCharacter(memberName, task.id)
-                                    end
-                                end
-                                needsProgressUpdate = true
+                                needsTaskSetup = true
+                                pendingTaskID = task.id
                                 selectedTab = 0  -- Switch to Group Task Tracker tab
                             end
                         end
@@ -1105,6 +1105,7 @@ local function GroupTaskTrackerGUI()
                 ImGui.BulletText("Run this script on all group members")
                 ImGui.BulletText("All characters must be in the same group")
                 ImGui.BulletText("DanNet must be running on all clients")
+                ImGui.BulletText("Mercenaries are automatically ignored")
                 ImGui.Separator()
 
                 ImGui.TextColored(1, 1, 0.5, 1, "Task Selection:")
@@ -1279,6 +1280,20 @@ while Open do
             needsProgressUpdate = true
         end
         print("[GQT] Refreshed - observers recreated")
+    end
+
+    -- Handle deferred task observer setup (from task selection in ImGui)
+    if needsTaskSetup and pendingTaskID then
+        needsTaskSetup = false
+        local taskID = pendingTaskID
+        pendingTaskID = nil
+        local myName = mq.TLO.Me.CleanName()
+        for _, memberName in ipairs(groupMembers) do
+            if memberName ~= myName then
+                SetupTaskObserversForCharacter(memberName, taskID)
+            end
+        end
+        needsProgressUpdate = true
     end
 
     if needsProgressUpdate and not lootState.active and not pickupState.active and not hailState.active and not turninState.active and not useItemState.active then

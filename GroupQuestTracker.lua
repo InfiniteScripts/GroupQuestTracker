@@ -97,7 +97,105 @@ local clickAreaState = {
 
 local queryCounter = 0
 
--- No persistent observers - using transient queries with slower update interval
+-- Persistent observer tracking
+local persistentObservers = {} -- [characterName][query] = true
+
+-- Create a persistent observer (does not read the value)
+local function CreatePersistentObserver(characterName, query)
+    local cleanName = characterName:gsub("'s corpse$", "")
+
+    -- Initialize character table if needed
+    if not persistentObservers[cleanName] then
+        persistentObservers[cleanName] = {}
+    end
+
+    -- Only create if not already exists
+    if not persistentObservers[cleanName][query] then
+        mq.cmdf('/squelch /dobserve %s -q "%s"', cleanName, query)
+        persistentObservers[cleanName][query] = true
+    end
+end
+
+-- Read a persistent observer value (must be created first)
+local function ReadPersistentObserver(characterName, query)
+    local cleanName = characterName:gsub("'s corpse$", "")
+
+    local success, result = pcall(function()
+        return mq.TLO.DanNet(cleanName).Observe(query)()
+    end)
+
+    if not success or result == nil or result == "NULL" or result == "" or result == false or result == "FALSE" then
+        return nil
+    end
+
+    return result
+end
+
+-- Drop a persistent observer
+local function DropPersistentObserver(characterName, query)
+    local cleanName = characterName:gsub("'s corpse$", "")
+
+    if persistentObservers[cleanName] and persistentObservers[cleanName][query] then
+        mq.cmdf('/squelch /dobserve %s -q "%s" -drop', cleanName, query)
+        persistentObservers[cleanName][query] = nil
+    end
+end
+
+-- Drop all persistent observers for a character
+local function DropAllObserversForCharacter(characterName)
+    local cleanName = characterName:gsub("'s corpse$", "")
+
+    if persistentObservers[cleanName] then
+        for query, _ in pairs(persistentObservers[cleanName]) do
+            mq.cmdf('/squelch /dobserve %s -q "%s" -drop', cleanName, query)
+        end
+        persistentObservers[cleanName] = nil
+    end
+end
+
+-- Drop all persistent observers
+local function DropAllObservers()
+    for characterName, queries in pairs(persistentObservers) do
+        for query, _ in pairs(queries) do
+            mq.cmdf('/squelch /dobserve %s -q "%s" -drop', characterName, query)
+        end
+    end
+    persistentObservers = {}
+end
+
+-- Set up invis observers for all remote group members
+local function SetupInvisObservers()
+    local myName = mq.TLO.Me.CleanName()
+
+    for _, memberName in ipairs(groupMembers) do
+        if memberName ~= myName then
+            local cleanName = memberName:gsub("'s corpse$", "")
+
+            -- Create Me.Invis observer with delay if new
+            if not persistentObservers[cleanName] or not persistentObservers[cleanName]['Me.Invis'] then
+                CreatePersistentObserver(memberName, 'Me.Invis')
+                mq.delay(50)
+            end
+
+            -- Create Me.Invis[UNDEAD] observer with delay if new
+            if not persistentObservers[cleanName] or not persistentObservers[cleanName]['Me.Invis[UNDEAD]'] then
+                CreatePersistentObserver(memberName, 'Me.Invis[UNDEAD]')
+                mq.delay(50)
+            end
+        end
+    end
+end
+
+-- Read invis status for a remote character
+local function GetRemoteInvisStatus(characterName)
+    local invis = ReadPersistentObserver(characterName, 'Me.Invis')
+    local invisUndead = ReadPersistentObserver(characterName, 'Me.Invis[UNDEAD]')
+
+    return {
+        invis = (invis == "TRUE" or invis == true),
+        invisUndead = (invisUndead == "TRUE" or invisUndead == true)
+    }
+end
 
 -- Query DanNet - use query string as observer index (creates/destroys observer) - for non-quest queries
 local function DanNetQuery(characterName, query)
@@ -135,7 +233,7 @@ local function UpdateGroupMembers()
     groupMembers = {}
     local myName = mq.TLO.Me.CleanName()
     table.insert(groupMembers, myName)
-    
+
     local groupSize = mq.TLO.Group.Members() or 0
     for i = 1, groupSize do
         local memberName = mq.TLO.Group.Member(i).CleanName()
@@ -143,6 +241,9 @@ local function UpdateGroupMembers()
             table.insert(groupMembers, memberName)
         end
     end
+
+    -- Set up persistent invis observers for remote members
+    SetupInvisObservers()
 end
 
 -- Get local tasks
@@ -368,12 +469,12 @@ local function IsCharacterInvisible(characterName)
     local myName = mq.TLO.Me.CleanName()
 
     if characterName == myName then
-        -- Check local character
+        -- Check local character (driver)
         return mq.TLO.Me.Invis() or false
     else
-        -- Query remote character via DanNet
-        local invisStatus = DanNetQuery(characterName, "Me.Invis")
-        return invisStatus == "TRUE"
+        -- Read from persistent observer
+        local invisStatus = ReadPersistentObserver(characterName, 'Me.Invis')
+        return (invisStatus == "TRUE" or invisStatus == true)
     end
 end
 
@@ -382,12 +483,12 @@ local function IsCharacterInvisUndead(characterName)
     local myName = mq.TLO.Me.CleanName()
 
     if characterName == myName then
-        -- Check local character - Me.Invis[UNDEAD] or Me.Invis[2]
+        -- Check local character (driver) - Me.Invis[UNDEAD] or Me.Invis[2]
         return mq.TLO.Me.Invis("UNDEAD")() or false
     else
-        -- Query remote character via DanNet
-        local ivuStatus = DanNetQuery(characterName, "Me.Invis[UNDEAD]")
-        return ivuStatus == "TRUE"
+        -- Read from persistent observer
+        local ivuStatus = ReadPersistentObserver(characterName, 'Me.Invis[UNDEAD]')
+        return (ivuStatus == "TRUE" or ivuStatus == true)
     end
 end
 
@@ -985,8 +1086,7 @@ end)
 
 mq.imgui.init('groupquesttracker', GroupQuestTrackerGUI)
 
--- Disable DanNet debug output
-mq.cmd('/squelch /dnet debug off')
+
 
 print(string.format("\ay[\at%s\ay] \agStarted - /gqt to toggle, /gqtstop to exit, /gqtcleanup to clear observers", SCRIPT_NAME))
 

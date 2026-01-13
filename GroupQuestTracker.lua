@@ -197,7 +197,7 @@ local function GetRemoteInvisStatus(characterName)
     }
 end
 
--- Query DanNet - use query string as observer index (creates/destroys observer) - for non-quest queries
+-- Query DanNet - use query string as observer index (creates/destroys observer) - for transient queries
 local function DanNetQuery(characterName, query)
     -- Strip "'s corpse" suffix if present
     local cleanName = characterName:gsub("'s corpse$", "")
@@ -222,6 +222,207 @@ local function DanNetQuery(characterName, query)
     end
 
     return result
+end
+
+-- Track quest progress state for each character
+local questObserverState = {} -- [characterName] = { taskID, currentObjective, stepQuery, statusQuery }
+
+-- Set up initial quest observers for a character - find task slot by matching Task.ID
+local function SetupQuestObserversForCharacter(characterName, taskID)
+    local myName = mq.TLO.Me.CleanName()
+    if characterName == myName then return end
+
+    local cleanName = characterName:gsub("'s corpse$", "")
+    local targetID = tostring(taskID)
+
+    -- First, find which task slot has the matching Task.ID using transient DanNetQuery
+    local taskSlot = nil
+    for i = 1, 10 do
+        local slotID = DanNetQuery(characterName, string.format('Task[%d].ID', i))
+
+        if not slotID or slotID == "" or slotID == "NULL" then
+            break
+        end
+
+        if tostring(slotID) == targetID then
+            taskSlot = i
+            break
+        end
+    end
+
+    if not taskSlot then
+        questObserverState[cleanName] = { taskID = taskID, taskSlot = nil, currentObjective = nil, complete = false, hasQuest = false }
+        return
+    end
+
+    -- Now create persistent observer for Task[slot].Step
+    local stepQuery = string.format('Task[%d].Step', taskSlot)
+    if not persistentObservers[cleanName] or not persistentObservers[cleanName][stepQuery] then
+        CreatePersistentObserver(characterName, stepQuery)
+        mq.delay(100)
+    end
+
+    -- Read the current step text
+    local stepText = ReadPersistentObserver(characterName, stepQuery)
+
+    if not stepText or stepText == "" or stepText == "NULL" then
+        -- Character may have completed the quest
+        questObserverState[cleanName] = { taskID = taskID, taskSlot = taskSlot, currentObjective = nil, stepQuery = stepQuery, complete = true, hasQuest = true }
+        return
+    end
+
+    -- Find the objective index by checking objectives until we match
+    local currentObjective = nil
+    for j = 1, 20 do
+        local instrQuery = string.format('Task[%d].Objective[%d].Instruction', taskSlot, j)
+        if not persistentObservers[cleanName] or not persistentObservers[cleanName][instrQuery] then
+            CreatePersistentObserver(characterName, instrQuery)
+            mq.delay(100)
+        end
+
+        local instruction = ReadPersistentObserver(characterName, instrQuery)
+        if not instruction or instruction == "" or instruction == "NULL" then
+            break
+        end
+
+        if instruction == stepText then
+            currentObjective = j
+            break
+        end
+    end
+
+    if not currentObjective then
+        -- Couldn't find matching objective, quest may be complete
+        questObserverState[cleanName] = { taskID = taskID, taskSlot = taskSlot, currentObjective = nil, stepQuery = stepQuery, complete = true, hasQuest = true }
+        return
+    end
+
+    -- Create observer for the current objective's status
+    local statusQuery = string.format('Task[%d].Objective[%d].Status', taskSlot, currentObjective)
+    if not persistentObservers[cleanName] or not persistentObservers[cleanName][statusQuery] then
+        CreatePersistentObserver(characterName, statusQuery)
+        mq.delay(100)
+    end
+
+    -- Store the state
+    questObserverState[cleanName] = {
+        taskID = taskID,
+        taskSlot = taskSlot,
+        currentObjective = currentObjective,
+        stepQuery = stepQuery,
+        statusQuery = statusQuery,
+        complete = false,
+        hasQuest = true
+    }
+end
+
+-- Update quest observer when objective completes - drop old status observer, find new objective
+local function UpdateQuestObserverForCharacter(characterName, taskID)
+    local myName = mq.TLO.Me.CleanName()
+    if characterName == myName then return end
+
+    local cleanName = characterName:gsub("'s corpse$", "")
+    local state = questObserverState[cleanName]
+
+    if not state or not state.taskSlot then
+        -- No state yet, set up from scratch
+        SetupQuestObserversForCharacter(characterName, taskID)
+        return
+    end
+
+    -- If character doesn't have the quest, nothing to update
+    if not state.hasQuest then
+        return
+    end
+
+    -- Read the current step text
+    local stepText = ReadPersistentObserver(characterName, state.stepQuery)
+
+    -- Check if current objective status is "Done"
+    if state.statusQuery then
+        local status = ReadPersistentObserver(characterName, state.statusQuery)
+        if status == "Done" then
+            -- Drop the old status observer
+            DropPersistentObserver(characterName, state.statusQuery)
+
+            -- Find the new objective that matches stepText
+            local newObjective = nil
+            for j = 1, 20 do
+                local instrQuery = string.format('Task[%d].Objective[%d].Instruction', state.taskSlot, j)
+                if not persistentObservers[cleanName] or not persistentObservers[cleanName][instrQuery] then
+                    CreatePersistentObserver(characterName, instrQuery)
+                    mq.delay(50)
+                end
+
+                local instruction = ReadPersistentObserver(characterName, instrQuery)
+                if not instruction or instruction == "" or instruction == "NULL" then
+                    break
+                end
+
+                if instruction == stepText then
+                    newObjective = j
+                    break
+                end
+            end
+
+            if newObjective then
+                -- Create new status observer
+                local newStatusQuery = string.format('Task[%d].Objective[%d].Status', state.taskSlot, newObjective)
+                if not persistentObservers[cleanName] or not persistentObservers[cleanName][newStatusQuery] then
+                    CreatePersistentObserver(characterName, newStatusQuery)
+                    mq.delay(50)
+                end
+
+                state.currentObjective = newObjective
+                state.statusQuery = newStatusQuery
+                state.complete = false
+            else
+                -- No matching objective found, quest may be complete
+                state.currentObjective = nil
+                state.statusQuery = nil
+                state.complete = true
+            end
+        end
+    end
+end
+
+-- Read quest progress from persistent observers
+local function ReadQuestProgressFromObservers(characterName)
+    local cleanName = characterName:gsub("'s corpse$", "")
+    local state = questObserverState[cleanName]
+
+    if not state then
+        return { hasQuest = false, currentStep = "Not on quest", objectives = {} }
+    end
+
+    -- Character doesn't have the quest
+    if not state.hasQuest then
+        return { hasQuest = false, currentStep = "Not on quest", objectives = {} }
+    end
+
+    if state.complete then
+        return { hasQuest = true, currentStep = "All Complete!", objectives = {}, currentObjective = nil }
+    end
+
+    if not state.stepQuery then
+        return { hasQuest = false, currentStep = "Not on quest", objectives = {} }
+    end
+
+    local stepText = ReadPersistentObserver(characterName, state.stepQuery)
+    local status = state.statusQuery and ReadPersistentObserver(characterName, state.statusQuery) or "Unknown"
+
+    if not stepText or stepText == "" or stepText == "NULL" then
+        return { hasQuest = true, currentStep = "All Complete!", objectives = {}, currentObjective = nil }
+    end
+
+    local currentStep = string.format("%s (%s)", stepText, status or "Unknown")
+
+    return {
+        hasQuest = true,
+        currentStep = currentStep,
+        objectives = {},
+        currentObjective = state.currentObjective
+    }
 end
 
 ----------------------------------------------------------------------
@@ -426,7 +627,7 @@ local function QueryRemoteProgress(characterName, taskID)
 end
 
 
--- Update all progress
+-- Update all progress using persistent observers
 local function UpdateQuestProgress()
     if not selectedQuestID then return end
 
@@ -437,7 +638,10 @@ local function UpdateQuestProgress()
         if memberName == myName then
             newProgress[memberName] = GetQuestProgress(selectedQuestID)
         else
-            newProgress[memberName] = QueryRemoteProgress(memberName, selectedQuestID)
+            -- Update observer state (handles objective completion transitions)
+            UpdateQuestObserverForCharacter(memberName, selectedQuestID)
+            -- Read progress from observers
+            newProgress[memberName] = ReadQuestProgressFromObservers(memberName)
         end
     end
 
@@ -930,6 +1134,14 @@ local function GroupQuestTrackerGUI()
                             if selectedQuestID ~= quest.id then
                                 selectedQuest = quest.title
                                 selectedQuestID = quest.id
+                                -- Clear old quest observer state and set up new observers
+                                questObserverState = {}
+                                local myName = mq.TLO.Me.CleanName()
+                                for _, memberName in ipairs(groupMembers) do
+                                    if memberName ~= myName then
+                                        SetupQuestObserversForCharacter(memberName, quest.id)
+                                    end
+                                end
                                 needsProgressUpdate = true
                                 selectedTab = 0  -- Switch to Group Quest Tracker tab
                             end
@@ -1099,6 +1311,13 @@ if #availableQuests == 1 then
     selectedQuestID = availableQuests[1].id
     selectedTab = 0  -- Switch to Group Quest Tracker tab
     print(string.format("[GQT] Auto-selected quest: %s", selectedQuest))
+    -- Set up quest observers for all remote members
+    local myName = mq.TLO.Me.CleanName()
+    for _, memberName in ipairs(groupMembers) do
+        if memberName ~= myName then
+            SetupQuestObserversForCharacter(memberName, selectedQuestID)
+        end
+    end
     needsProgressUpdate = true
 end
 

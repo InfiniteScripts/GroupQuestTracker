@@ -1,9 +1,13 @@
 --[[
     GroupTaskTracker.lua
-    Task progress tracker for EQ group members
-    
+    Task progress tracker for EQ group members using DanNet
+
     Usage: /lua run GroupTaskTracker
-    Commands: /gqt (toggle UI), /gqtstop (stop), /gqtrefresh
+    Commands:
+        /gqt - Toggle UI window
+        /gqtstop - Stop the script
+        /gqtrefresh - Refresh task data
+        /gqtcleanup - Clear all DanNet observers
 ]]
 
 local mq = require('mq')

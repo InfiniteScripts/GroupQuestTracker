@@ -970,6 +970,9 @@ local function GroupTaskTrackerGUI()
                             -- Progress column
                             ImGui.TableSetColumnIndex(3)
 
+                            -- Enable text wrapping for this column
+                            ImGui.PushTextWrapPos(0)  -- 0 means wrap at column edge
+
                             local prog = taskProgress[memberName]
                             if prog then
                                 if prog.hasTask then
@@ -985,6 +988,8 @@ local function GroupTaskTrackerGUI()
                             else
                                 ImGui.TextColored(0.7, 0.7, 0.7, 1, "...")
                             end
+
+                            ImGui.PopTextWrapPos()
                         end
 
                         ImGui.EndTable()
